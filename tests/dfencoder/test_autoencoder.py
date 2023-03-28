@@ -221,7 +221,7 @@ def test_auto_encoder_get_scaler():
     assert len(test_values) == len(AEFeatureScalar), "Not all values in AEFeatureScalar are tested"
 
     for (value, expected) in test_values:
-        assert ae.get_scaler(value) is expected
+        assert ae._get_scaler(value) is expected
 
 
 def test_auto_encoder_init_numeric(filter_probs_df):
