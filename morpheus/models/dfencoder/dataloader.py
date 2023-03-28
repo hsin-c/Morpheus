@@ -351,7 +351,7 @@ class DatasetFromPath(Dataset):
         if self._preloaded_data is None:
             self._preloaded_data = {fn: self._load_data_fn(f"{self._data_folder}/{fn}") for fn in self._filenames}
         return pd.concat(pdf for pdf in self._preloaded_data.values())
-    
+
     @staticmethod
     def get_validation_dataset(model, data_folder, load_data_fn=pd.read_csv, preload_data_into_memory=True):
         """A helper function to get a validation dataset with the provided parameters.
@@ -390,7 +390,7 @@ class DatasetFromPath(Dataset):
         ----------
          model : AutoEncoder
             The autoencoder model used to get relevant params and the preprocessing func.
-        """        
+        """
         self._preprocess_fn = model.preprocess_validation_data
         self._batch_size = model.eval_batch_size
         self._shuffle_rows_in_batch = False
@@ -563,7 +563,7 @@ class DatasetFromDataframe(Dataset):
             shuffle_batch_indices=False,
         )
         return dataset
-    
+
     def convert_to_validation(self, model):
         """Converts the dataset to validation mode by resetting instance variables.
 
@@ -571,7 +571,7 @@ class DatasetFromDataframe(Dataset):
         ----------
          model : AutoEncoder
             The autoencoder model used to get relevant params and the preprocessing func.
-        """    
+        """
         self._preprocess_fn = model.preprocess_validation_data
         self._batch_size = model.eval_batch_size
         self._shuffle_rows_in_batch = False

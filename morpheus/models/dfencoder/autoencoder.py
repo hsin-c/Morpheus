@@ -339,13 +339,13 @@ class AutoEncoder(torch.nn.Module):
             if any of `preset_cats`, `preset_numerical_scaler_params`, and `binary_feature_list` are not provided at model initialization
         """
         if df is None:
-            # all feature information needs to be fed into the model at initialization in order to build the 
-            # model without `df` as an input 
+            # all feature information needs to be fed into the model at initialization in order to build the
+            # model without `df` as an input
             if self.preset_cats is None or self.bin_names is None or self.preset_numerical_scaler_params is None:
-                raise ValueError('Fail to intitialize the features without an input dataframe. '
-                'All of `preset_cats`, `preset_numerical_scaler_params`, and `binary_feature_list` need to be provided during model '
-                'initialization for this function to work without an input `df`.'
-                )
+                raise ValueError(
+                    'Fail to intitialize the features without an input dataframe. '
+                    'All of `preset_cats`, `preset_numerical_scaler_params`, and `binary_feature_list` need to be provided during model '
+                    'initialization for this function to work without an input `df`.')
 
         if self.preset_cats is not None:
             LOG.debug('Using the preset categories `self.preset_cats` to initialize the categories features...')
@@ -678,10 +678,9 @@ class AutoEncoder(torch.nn.Module):
             If `run_validation` or `use_val_for_loss_stats` is `True` but `val_data` is not provided.
         """
         if not isinstance(train_data, (pd.DataFrame, torch.utils.data.DataLoader, torch.utils.data.Dataset)):
-            raise TypeError(
-                "`train_data` needs to be a pandas DataFrame, a DataLoader, or a Dataset."
-                f" `train_data` is currently of type: {type(train_data)}")
-        
+            raise TypeError("`train_data` needs to be a pandas DataFrame, a DataLoader, or a Dataset."
+                            f" `train_data` is currently of type: {type(train_data)}")
+
         if self.distributed_training and (rank is None or world_size is None):
             raise ValueError('`rank` and `world_size` must be provided for distributed training.')
 
@@ -692,7 +691,8 @@ class AutoEncoder(torch.nn.Module):
             raise ValueError("`run_validation` is set to True but the validation set (val_data) is not provided.")
 
         if use_val_for_loss_stats and val_data is None:
-            raise ValueError("`use_val_for_loss_stats` is set to True but the validation set (val_data) is not provided.")
+            raise ValueError(
+                "`use_val_for_loss_stats` is set to True but the validation set (val_data) is not provided.")
 
         # If train_data is in the format of a pandas df, wrap it by a dataset
         train_df = None
@@ -703,7 +703,7 @@ class AutoEncoder(torch.nn.Module):
         # If val_data is in the format of a pandas df, wrap it by a dataset
         if isinstance(val_data, pd.DataFrame):
             val_data = DatasetFromDataframe.get_validation_dataset(self, val_data)
-        
+
         rank = rank if self.distributed_training else 0  # set rank to 0 in centralized training mode
         world_size = world_size if self.distributed_training else 1  # set rank to 0 in centralized training mode
 
@@ -719,7 +719,7 @@ class AutoEncoder(torch.nn.Module):
             rank=rank,
             world_size=world_size,
         )
-    
+
     def _fit_data(
         self,
         train_data,
@@ -755,7 +755,7 @@ class AutoEncoder(torch.nn.Module):
             By default True as using the validation set to populate loss stats is strongly recommended (for both efficiency 
             and model efficacy).
         """
-        rank_str = f"[Rank {rank}] " if self.distributed_training else "" # for logging
+        rank_str = f"[Rank {rank}] " if self.distributed_training else ""  # for logging
 
         is_main_process = rank == 0
         should_run_validation = (run_validation and val_data is not None)
@@ -807,7 +807,9 @@ class AutoEncoder(torch.nn.Module):
                         LOG.debug(f'\t{rank_str}Loss went up. Early stop count: {count_es}')
 
                         if count_es >= self.patience:
-                            LOG.debug(f'\t{rank_str}Early stopping: early stop count({count_es}) >= patience({self.patience})')
+                            LOG.debug(
+                                f'\t{rank_str}Early stopping: early stop count({count_es}) >= patience({self.patience})'
+                            )
                             should_early_stop = True
                     else:
                         LOG.debug(f'\t{rank_str}Loss went down. Reset count for earlystop to 0')
@@ -820,7 +822,7 @@ class AutoEncoder(torch.nn.Module):
             if self.distributed_training:
                 # sync early stopping info so the early stopping decision can be passed from the main process to other processes
                 # making a list to create enough room to store the collected objects
-                early_stpping_state = [None for _ in range(world_size)]  
+                early_stpping_state = [None for _ in range(world_size)]
                 torch.distributed.all_gather_object(early_stpping_state, should_early_stop)
                 should_early_stop_synced = early_stpping_state[0]  # take the state of the main process
                 LOG.debug(f'\t{rank_str}(Epoch {epoch+1}) Synced early stopping state: {should_early_stop_synced}')
