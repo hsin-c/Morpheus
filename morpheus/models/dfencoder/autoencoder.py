@@ -132,10 +132,7 @@ class AutoEncoder(torch.nn.Module):
             distributed_training=False,
             logger='basic',
             logdir='logdir/',
-            project_embeddings=True,
             run=None,
-            progress_bar=True,
-            n_megabatches=1,
             scaler='standard',
             patience=5,
             preset_cats=None,
@@ -197,8 +194,6 @@ class AutoEncoder(torch.nn.Module):
         self.weight_decay = weight_decay
         self.nesterov = nesterov
 
-        self.progress_bar = progress_bar
-
         self.mse = torch.nn.modules.loss.MSELoss(reduction='none')
         self.bce = torch.nn.modules.loss.BCELoss(reduction='none')
         self.cce = torch.nn.modules.loss.CrossEntropyLoss(reduction='none')
@@ -212,17 +207,14 @@ class AutoEncoder(torch.nn.Module):
         self.logger = logger
         self.logdir = logdir
         self.run = run
-        self.project_embeddings = project_embeddings
         self.scaler = scaler
         self.patience = patience
 
         # scaler class used to scale losses and collect loss stats
         self.loss_scaler_str = loss_scaler
-        self.loss_scaler = self.get_scaler(loss_scaler)
+        self.loss_scaler = self._get_scaler(loss_scaler)
 
-        self.n_megabatches = n_megabatches
-
-    def get_scaler(self, name):
+    def _get_scaler(self, name):
         scalers = {
             'standard': StandardScaler,
             'gauss_rank': GaussRankScaler,
@@ -254,7 +246,7 @@ class AutoEncoder(torch.nn.Module):
             LOG.debug("Using self.preset_numerical_scaler_params to override the numerical scalers...")
             for ft, scaler_params in self.preset_numerical_scaler_params.items():
                 # scaler_params should include the following keys: scaler_type, scaler_attr_dict, mean, std
-                scaler = self.get_scaler(scaler_params.get("scaler_type", "gauss_rank"))()
+                scaler = self._get_scaler(scaler_params.get("scaler_type", "gauss_rank"))()
                 for k, v in scaler_params["scaler_attr_dict"].items():
                     # scaler_params['scaler_attr_dict'] should be a dict including all the class attributes of a fitted scaler class
                     setattr(scaler, k, v)
@@ -274,7 +266,7 @@ class AutoEncoder(torch.nn.Module):
                 scalers = self.scaler
 
             for ft in numeric:
-                Scaler = self.get_scaler(scalers.get(ft, "gauss_rank"))
+                Scaler = self._get_scaler(scalers.get(ft, "gauss_rank"))
                 feature = {
                     "mean": df[ft].mean(),
                     "std": df[ft].std(),
@@ -284,59 +276,6 @@ class AutoEncoder(torch.nn.Module):
                 self.numeric_fts[ft] = feature
 
         self.num_names = list(self.numeric_fts.keys())
-
-    def create_numerical_col_max(self, num_names, mse_loss):
-        if num_names:
-            num_df = pd.DataFrame(num_names)
-            num_df.columns = ['num_col_max_loss']
-            num_df.reset_index(inplace=True)
-            argmax_df = pd.DataFrame(torch.argmax(mse_loss.cpu(), dim=1).numpy())
-            argmax_df.columns = ['index']
-            num_df = num_df.merge(argmax_df, on='index', how='left')
-            num_df.drop('index', axis=1, inplace=True)
-        else:
-            num_df = pd.DataFrame()
-        return num_df
-
-    def create_binary_col_max(self, bin_names, bce_loss):
-        if bin_names:
-            bool_df = pd.DataFrame(bin_names)
-            bool_df.columns = ['bin_col_max_loss']
-            bool_df.reset_index(inplace=True)
-            argmax_df = pd.DataFrame(torch.argmax(bce_loss.cpu(), dim=1).numpy())
-            argmax_df.columns = ['index']
-            bool_df = bool_df.merge(argmax_df, on='index', how='left')
-            bool_df.drop('index', axis=1, inplace=True)
-        else:
-            bool_df = pd.DataFrame()
-        return bool_df
-
-    def create_categorical_col_max(self, cat_names, cce_loss):
-        final_list = []
-        if cat_names:
-            for index, val in enumerate(cce_loss):
-                val = pd.DataFrame(val.cpu().numpy())
-                val.columns = [cat_names[index]]
-                final_list.append(val)
-            cat_df = pd.DataFrame(pd.concat(final_list, axis=1).idxmax(axis=1))
-            cat_df.columns = ['cat_col_max_loss']
-        else:
-            cat_df = pd.DataFrame()
-        return cat_df
-
-    def get_variable_importance(self, num_names, cat_names, bin_names, mse_loss, bce_loss, cce_loss, cloudtrail_df):
-        # Get data in the right format
-        num_df = self.create_numerical_col_max(num_names, mse_loss)
-        bool_df = self.create_binary_col_max(bin_names, bce_loss)
-        cat_df = self.create_categorical_col_max(cat_names, cce_loss)
-        variable_importance_df = pd.concat([num_df, bool_df, cat_df], axis=1)
-        return variable_importance_df
-
-    def return_feature_names(self):
-        bin_names = list(self.binary_fts.keys())
-        num_names = list(self.numeric_fts.keys())
-        cat_names = list(self.categorical_fts.keys())
-        return num_names, cat_names, bin_names
 
     def _init_cats(self, df):
         objects = list(df.select_dtypes(include=object).columns)
@@ -536,7 +475,7 @@ class AutoEncoder(torch.nn.Module):
             codes.append(code)
         return num, bin, codes
 
-    def encode_input(self, df):
+    def _encode_input(self, df):
         """
         Handles raw df inputs.
         Passes categories through embedding layers.
@@ -549,7 +488,7 @@ class AutoEncoder(torch.nn.Module):
         return [num], [bin], embeddings
 
     def build_input_tensor(self, df):
-        num, bin, embeddings = self.encode_input(df)
+        num, bin, embeddings = self._encode_input(df)
         x = torch.cat(num + bin + embeddings, dim=1)
         return x
 
@@ -625,20 +564,7 @@ class AutoEncoder(torch.nn.Module):
 
         return preprocessed_data
 
-    def compute_loss(self, num, bin, cat, target_df, should_log=True, _id=False):
-        num_target, bin_target, codes = self.compute_targets(target_df)
-        return self.compute_loss_from_targets(
-            num=num,
-            bin=bin,
-            cat=cat,
-            num_target=num_target,
-            bin_target=bin_target,
-            cat_target=codes,
-            should_log=should_log,
-            _id=_id,
-        )
-
-    def compute_loss_from_targets(self, num, bin, cat, num_target, bin_target, cat_target, should_log=True, _id=False):
+    def _compute_loss_from_targets(self, num, bin, cat, num_target, bin_target, cat_target, should_log=True, _id=False):
         """Computes the loss from targets.
 
         Parameters
@@ -696,41 +622,12 @@ class AutoEncoder(torch.nn.Module):
         net_loss = np.array(net_loss).mean()
         return mse_loss, bce_loss, cce_loss, net_loss
 
-    def do_backward(self, mse, bce, cce):
+    def _do_backward(self, mse, bce, cce):
         # running `backward()` seperately on mse/bce/cce is equivalent to summing them up and run `backward()` once
         loss_fn = mse + bce
         for ls in cce:
             loss_fn += ls
         loss_fn.backward()
-
-    def compute_baseline_performance(self, in_, out_):
-        """
-        Baseline performance is computed by generating a strong
-            prediction for the identity function (predicting input==output)
-            with a swapped (noisy) input,
-            and computing the loss against the unaltered original data.
-
-        This should be roughly the loss we expect when the encoder degenerates
-            into the identity function solution.
-
-        Returns net loss on baseline performance computation
-            (sum of all losses)
-        """
-        self.eval()
-
-        num_pred, bin_pred, codes = self.compute_targets(in_)
-        bin_pred += ((bin_pred == 0).float() * 0.05)
-        bin_pred -= ((bin_pred == 1).float() * 0.05)
-        codes_pred = []
-        for i, cd in enumerate(codes):
-            feature = list(self.categorical_fts.items())[i][1]
-            dim = len(feature['cats']) + 1
-            pred = _ohe(cd, dim, device=self.device) * 5
-            codes_pred.append(pred)
-        mse_loss, bce_loss, cce_loss, net_loss = self.compute_loss(num_pred, bin_pred, codes_pred, out_, should_log=False)
-        if isinstance(self.logger, BasicLogger):
-            self.logger.baseline_loss = net_loss
-        return net_loss
 
     def _create_stat_dict(self, a):
         scaler = self.loss_scaler()
@@ -834,7 +731,7 @@ class AutoEncoder(torch.nn.Module):
         use_val_for_loss_stats=True,
     ):
         """ Fit the model with early stopping based on validation loss. Train in the specified mode (indicated 
-        by self.distrivuted_training).
+        by self.distributed_training).
         If run_validation is True, the val_data will be used for validation during training and early stopping 
         will be applied based on patience argument.
 
@@ -948,270 +845,6 @@ class AutoEncoder(torch.nn.Module):
                 dataset_for_loss_stats.convert_to_validation(self)
             self._populate_loss_stats_from_dataset(dataset_for_loss_stats)
 
-    # def _fit_centralized(self, df, epochs=1, val=None, run_validation=False, use_val_for_loss_stats=False):
-    #     """Does training in a single process on a single GPU.
-
-    #     Parameters
-    #     ----------
-    #     df : pandas.DataFrame
-    #         Data used for training.
-    #     epochs : int, optional
-    #         Number of epochs to run training, by default 1.
-    #     val : pandas.DataFrame, optional
-    #         Optional pandas dataframe for validation or loss stats, by default None.
-    #     run_validation : bool, optional
-    #         Whether to collect validation loss for each epoch during training, by default False.
-    #     use_val_for_loss_stats : bool, optional
-    #         Whether to use the validation set for loss statistics collection (for z score calculation), by default False.
-
-    #     Raises
-    #     ------
-    #     ValueError
-    #         If run_validation or use_val_for_loss_stats is True but val is not provided.
-    #     """
-    #     if (run_validation or use_val_for_loss_stats) and val is None:
-    #         raise ValueError("Validation set is required if either run_validation or \
-    #             use_val_for_loss_stats is set to True.")
-
-    #     if use_val_for_loss_stats:
-    #         df_for_loss_stats = val.copy()
-    #     else:
-    #         # use train loss
-    #         df_for_loss_stats = df.copy()
-
-    #     if run_validation and val is not None:
-    #         val = val.copy()
-
-    #     if self.optim is None:
-    #         self._build_model(df)
-
-    #     if self.n_megabatches == 1:
-    #         df = self.prepare_df(df)
-
-    #     if run_validation and val is not None:
-    #         val_df = self.prepare_df(val)
-    #         val_in = val_df.swap(likelihood=self.swap_p)
-    #         msg = "Validating during training.\n"
-    #         msg += "Computing baseline performance..."
-    #         baseline = self.compute_baseline_performance(val_in, val_df)
-    #         LOG.debug(msg)
-
-    #         val_batches = len(val_df) // self.eval_batch_size
-    #         if len(val_df) % self.eval_batch_size != 0:
-    #             val_batches += 1
-
-    #     n_updates = len(df) // self.batch_size
-    #     if len(df) % self.batch_size > 0:
-    #         n_updates += 1
-    #     last_loss = 5000
-
-    #     count_es = 0
-    #     for i in range(epochs):
-    #         self.train()
-
-    #         LOG.debug(f'training epoch {i + 1}...')
-    #         df = df.sample(frac=1.0)
-    #         df = EncoderDataFrame(df)
-    #         if self.n_megabatches > 1:
-    #             self.train_megabatch_epoch(n_updates, df)
-    #         else:
-    #             input_df = df.swap(likelihood=self.swap_p)
-    #             self.train_epoch(n_updates, input_df, df)
-
-    #         if self.lr_decay is not None:
-    #             self.lr_decay.step()
-
-    #         if run_validation and val is not None:
-    #             self.eval()
-    #             with torch.no_grad():
-    #                 swapped_loss = []
-    #                 id_loss = []
-    #                 for i in range(val_batches):
-    #                     start = i * self.eval_batch_size
-    #                     stop = (i + 1) * self.eval_batch_size
-
-    #                     slc_in = val_in.iloc[start:stop]
-    #                     slc_in_tensor = self.build_input_tensor(slc_in)
-
-    #                     slc_out = val_df.iloc[start:stop]
-    #                     slc_out_tensor = self.build_input_tensor(slc_out)
-
-    #                     num, bin, cat = self.model(slc_in_tensor)
-    #                     _, _, _, net_loss = self.compute_loss(num, bin, cat, slc_out)
-    #                     swapped_loss.append(net_loss)
-
-    #                     num, bin, cat = self.model(slc_out_tensor)
-    #                     _, _, _, net_loss = self.compute_loss(num, bin, cat, slc_out, _id=True)
-    #                     id_loss.append(net_loss)
-
-    #                 # Early stopping
-    #                 current_net_loss = net_loss
-    #                 LOG.debug('The Current Net Loss:', current_net_loss)
-
-    #                 if current_net_loss > last_loss:
-    #                     count_es += 1
-    #                     LOG.debug('Early stop count:', count_es)
-
-    #                     if count_es >= self.patience:
-    #                         LOG.debug('Early stopping: early stop count({}) >= patience({})'.format(
-    #                             count_es, self.patience))
-    #                         break
-
-    #                 else:
-    #                     LOG.debug('Set count for earlystop: 0')
-    #                     count_es = 0
-
-    #                 last_loss = current_net_loss
-
-    #                 self.logger.end_epoch()
-
-    #                 if self.verbose:
-    #                     swapped_loss = np.array(swapped_loss).mean()
-    #                     id_loss = np.array(id_loss).mean()
-
-    #                     msg = '\n'
-    #                     msg += 'net validation loss, swapped input: \n'
-    #                     msg += f"{round(swapped_loss, 4)} \n\n"
-    #                     msg += 'baseline validation loss: '
-    #                     msg += f"{round(baseline, 4)} \n\n"
-    #                     msg += 'net validation loss, unaltered input: \n'
-    #                     msg += f"{round(id_loss, 4)} \n\n\n"
-    #                     LOG.debug(msg)
-
-    #     #Getting training loss statistics
-    #     # mse_loss, bce_loss, cce_loss, _ = self.get_anomaly_score(pdf) if pdf_val is None else self.get_anomaly_score(pd.concat([pdf, pdf_val]))
-    #     mse_loss, bce_loss, cce_loss, _ = self.get_anomaly_score_with_losses(df_for_loss_stats)
-    #     for i, ft in enumerate(self.numeric_fts):
-    #         i_loss = mse_loss[:, i]
-    #         self.feature_loss_stats[ft] = self._create_stat_dict(i_loss)
-    #     for i, ft in enumerate(self.binary_fts):
-    #         i_loss = bce_loss[:, i]
-    #         self.feature_loss_stats[ft] = self._create_stat_dict(i_loss)
-    #     for i, ft in enumerate(self.categorical_fts):
-    #         i_loss = cce_loss[:, i]
-    #         self.feature_loss_stats[ft] = self._create_stat_dict(i_loss)
-
-    # def _fit_distributed(
-    #     self,
-    #     train_dataloader,
-    #     rank,
-    #     world_size,
-    #     epochs=1,
-    #     val_dataset=None,
-    #     run_validation=False,
-    #     use_val_for_loss_stats=True,
-    # ):
-    #     """Fit the model in the distributed fashion with early stopping based on validation loss.
-    #     If run_validation is True, the val_dataset will be used for validation during training and early stopping 
-    #     will be applied based on patience argument.
-
-    #     Parameters
-    #     ----------
-    #     train_dataloader : torch.utils.data.DataLoader
-    #         dataloader object of training data
-    #     rank : int
-    #         the rank of the current process
-    #     world_size : int
-    #         the total number of processes
-    #     epochs : int, optional
-    #         the number of epochs to train for, by default 1
-    #     val_dataset : torch.utils.data.Dataset or torch.utils.data.DataLoader, optional
-    #         the validation dataset (with __iter__() that yields a batch at a time), by default None
-    #     run_validation : bool, optional
-    #         whether to perform validation during training, by default False
-    #     use_val_for_loss_stats : bool, optional
-    #         whether to populate loss stats in the main process (rank 0) for z-score calculation using the validation set.
-    #         If set to False, loss stats would be populated using the train_dataloader, which can be slow due to data size.
-    #         By default True as using the validation set to populate loss stats is strongly recommended (for both efficiency 
-    #         and model efficacy).
-
-    #     Raises
-    #     ------
-    #     ValueError
-    #         If run_validation or use_val_for_loss_stats is True but val is not provided.
-    #     """
-    #     if run_validation and val_dataset is None:
-    #         raise ValueError("`run_validation` is set to True but the validation set (val_dataset) is not provided.")
-
-    #     if use_val_for_loss_stats and val_dataset is None:
-    #         raise ValueError("Validation set is required if either run_validation or \
-    #             use_val_for_loss_stats is set to True.")
-
-    #     if self.optim is None:
-    #         self._build_model(rank=rank)
-
-    #     is_main_process = rank == 0
-    #     should_run_validation = (run_validation and val_dataset is not None)
-    #     if self.patience and not should_run_validation:
-    #         LOG.warning(
-    #             f"Not going to perform early-stopping. self.patience(={self.patience}) is provided for early-stopping"
-    #             " but validation is not enabled. Please set `run_validation` to True and provide a `val_dataset` to"
-    #             " enable early-stopping.")
-
-    #     if is_main_process and should_run_validation:
-    #         LOG.debug('Validating during training. Computing baseline performance...')
-    #         baseline = self._compute_baseline_performance_from_dataset(val_dataset)
-
-    #         if isinstance(self.logger, BasicLogger):
-    #             self.logger.baseline_loss = baseline
-
-    #         LOG.debug(f'Baseline loss: {round(baseline, 4)}')
-
-    #     # early stopping
-    #     count_es = 0
-    #     last_val_loss = float('inf')
-    #     should_early_stop = False
-    #     for epoch in range(epochs):
-    #         LOG.debug(f'Rank{rank} training epoch {epoch + 1}...')
-
-    #         # if we are using DistributedSampler, we have to tell it which epoch this is
-    #         train_dataloader.sampler.set_epoch(epoch)
-
-    #         train_loss_sum = 0
-    #         train_loss_count = 0
-    #         for data_d in train_dataloader:
-    #             loss = self._fit_batch(**data_d['data'])
-
-    #             train_loss_count += 1
-    #             train_loss_sum += loss
-
-    #         if self.lr_decay is not None:
-    #             self.lr_decay.step()
-
-    #         if is_main_process and should_run_validation:
-    #             # run validation
-    #             curr_val_loss = self._validate_dataset(val_dataset, rank)
-    #             LOG.debug(f'Rank{rank} Loss: {round(last_val_loss, 4)}->{round(curr_val_loss, 4)}')
-
-    #             if self.patience:  # early stopping
-    #                 if curr_val_loss > last_val_loss:
-    #                     count_es += 1
-    #                     LOG.debug(f'Rank{rank} Loss went up. Early stop count: {count_es}')
-
-    #                     if count_es >= self.patience:
-    #                         LOG.debug(f'Early stopping: early stop count({count_es}) >= patience({self.patience})')
-    #                         should_early_stop = True
-    #                 else:
-    #                     LOG.debug(f'Rank{rank} Loss went down. Reset count for earlystop to 0')
-    #                     count_es = 0
-
-    #                 last_val_loss = curr_val_loss
-
-    #             self.logger.end_epoch()
-
-    #         # sync early stopping info so the early stopping decision can be passed from the main process to other processes
-    #         early_stpping_state = [None for _ in range(world_size)
-    #                                ]  # we have to create enough room to store the collected objects
-    #         torch.distributed.all_gather_object(early_stpping_state, should_early_stop)
-    #         should_early_stop_synced = early_stpping_state[0]  # take the state of the main process
-    #         if should_early_stop_synced is True:
-    #             LOG.debug(f'Rank{rank} Early stopped.')
-    #             break
-
-    #     if is_main_process:
-    #         dataset_for_loss_stats = val_dataset if use_val_for_loss_stats else train_dataloader
-    #         self._populate_loss_stats_from_dataset(dataset_for_loss_stats)
-
     def _fit_batch(self, input_swapped, num_target, bin_target, cat_target, **kwargs):
         """Forward pass on the input_swapped, then computes the losses from the predicted outputs and actual targets, performs 
         backpropagation, updates the model parameters, and returns the net loss.
@@ -1235,7 +868,7 @@ class AutoEncoder(torch.nn.Module):
         """
         self.train()
         num, bin, cat = self.model(input_swapped)
-        mse, bce, cce, net_loss = self.compute_loss_from_targets(
+        mse, bce, cce, net_loss = self._compute_loss_from_targets(
             num=num,
             bin=bin,
             cat=cat,
@@ -1244,7 +877,7 @@ class AutoEncoder(torch.nn.Module):
             cat_target=cat_target,
             should_log=True,
         )
-        self.do_backward(mse, bce, cce)
+        self._do_backward(mse, bce, cce)
         self.optim.step()
         self.optim.zero_grad()
         return net_loss
@@ -1281,7 +914,7 @@ class AutoEncoder(torch.nn.Module):
             cd_ohe = _ohe(cd, dim, device=self.device) * 5
             codes_swapped_ohe.append(cd_ohe)
 
-        _, _, _, net_loss = self.compute_loss_from_targets(
+        _, _, _, net_loss = self._compute_loss_from_targets(
             num=num_swapped,
             bin=bin_swapped,
             cat=codes_swapped_ohe,
@@ -1349,7 +982,7 @@ class AutoEncoder(torch.nn.Module):
             - net_loss: the net loss when passing the `input_swapped` through the model
         """
         orig_num, orig_bin, orig_cat = self.model(input_original)
-        _, _, _, orig_net_loss = self.compute_loss_from_targets(
+        _, _, _, orig_net_loss = self._compute_loss_from_targets(
             num=orig_num,
             bin=orig_bin,
             cat=orig_cat,
@@ -1361,7 +994,7 @@ class AutoEncoder(torch.nn.Module):
         )
 
         num, bin, cat = self.model(input_swapped)
-        _, _, _, net_loss = self.compute_loss_from_targets(
+        _, _, _, net_loss = self._compute_loss_from_targets(
             num=num,
             bin=bin,
             cat=cat,
@@ -1478,7 +1111,7 @@ class AutoEncoder(torch.nn.Module):
                     feature_losses[ft].append(loss_l)
 
                 num, bin, cat = self.model(data_d['data']['input_original'])
-                batch_output_df = self.decode_outputs_to_df(num=num, bin=bin, cat=cat)
+                batch_output_df = self._decode_outputs_to_df(num=num, bin=bin, cat=cat)
                 output_df.append(batch_output_df)
 
         LOG.debug(f'\tDone running inference. Making output df...')
@@ -1510,143 +1143,12 @@ class AutoEncoder(torch.nn.Module):
 
         return result
 
-    def train_epoch(self, n_updates, input_df, df, pbar=None):
-        """Run regular epoch."""
-
-        if pbar is None and self.progress_bar:
-            close = True
-            pbar = tqdm.tqdm(total=n_updates)
-        else:
-            close = False
-
-        for j in range(n_updates):
-            start = j * self.batch_size
-            stop = (j + 1) * self.batch_size
-            in_sample = input_df.iloc[start:stop]
-            in_sample_tensor = self.build_input_tensor(in_sample)
-            target_sample = df.iloc[start:stop]
-            num, bin, cat = self.model(in_sample_tensor)  # forward
-            mse, bce, cce, net_loss = self.compute_loss(num, bin, cat, target_sample, should_log=True)
-            self.do_backward(mse, bce, cce)
-            self.optim.step()
-            self.optim.zero_grad()
-
-            if self.progress_bar:
-                pbar.update(1)
-        if close:
-            pbar.close()
-
-    def train_megabatch_epoch(self, n_updates, df):
-        """
-        Run epoch doing 'megabatch' updates, preprocessing data in large
-        chunks.
-        """
-        if self.progress_bar:
-            pbar = tqdm.tqdm(total=n_updates)
-        else:
-            pbar = None
-
-        n_rows = len(df)
-        n_megabatches = self.n_megabatches
-        batch_size = self.batch_size
-        res = n_rows / n_megabatches
-        batches_per_megabatch = (res // batch_size) + 1
-        megabatch_size = batches_per_megabatch * batch_size
-        final_batch_size = n_rows - (n_megabatches - 1) * megabatch_size
-
-        for i in range(n_megabatches):
-            megabatch_start = int(i * megabatch_size)
-            megabatch_stop = int((i + 1) * megabatch_size)
-            megabatch = df.iloc[megabatch_start:megabatch_stop]
-            megabatch = self.prepare_df(megabatch)
-            input_df = megabatch.swap(self.swap_p)
-            if i == (n_megabatches - 1):
-                n_updates = int(final_batch_size // batch_size)
-                if final_batch_size % batch_size > 0:
-                    n_updates += 1
-            else:
-                n_updates = int(batches_per_megabatch)
-            self.train_epoch(n_updates, input_df, megabatch, pbar=pbar)
-            del megabatch
-            del input_df
-            gc.collect()
-
-    def get_representation(self, df, layer=0):
-        """
-        Computes latent feature vector from hidden layer
-            given input dataframe.
-
-        argument layer (int) specifies which layer to get.
-        by default (layer=0), returns the "encoding" layer.
-            layer < 0 counts layers back from encoding layer.
-            layer > 0 counts layers forward from encoding layer.
-        """
-        result = []
-        n_batches = len(df) // self.eval_batch_size
-        if len(df) % self.eval_batch_size != 0:
-            n_batches += 1
-
-        self.eval()
-
-        if self.optim is None:
-            self._build_model(df)
-        df = self.prepare_df(df)
-        with torch.no_grad():
-            for i in range(n_batches):
-                start = i * self.eval_batch_size
-                stop = (i + 1) * self.eval_batch_size
-                num, bin, embeddings = self.encode_input(df.iloc[start:stop])
-                x = torch.cat(num + bin + embeddings, dim=1)
-                if layer <= 0:
-                    layers = len(self.encoder) + layer
-                    x = self.model.encode(x, layers=layers)
-                else:
-                    x = self.model.encode(x)
-                    x = self.model.decode(x, layers=layer)
-                result.append(x)
-        z = torch.cat(result, dim=0)
-        return z
-
-    def get_deep_stack_features(self, df):
-        """
-        records and outputs all internal representations
-        of input df as row-wise vectors.
-        Output is 2-d array with len() == len(df)
-        """
-        result = []
-
-        n_batches = len(df) // self.eval_batch_size
-        if len(df) % self.eval_batch_size != 0:
-            n_batches += 1
-
-        self.eval()
-        if self.optim is None:
-            self._build_model(df)
-        df = self.prepare_df(df)
-        with torch.no_grad():
-            for i in range(n_batches):
-                this_batch = []
-                start = i * self.eval_batch_size
-                stop = (i + 1) * self.eval_batch_size
-                num, bin, embeddings = self.encode_input(df.iloc[start:stop])
-                x = torch.cat(num + bin + embeddings, dim=1)
-                for layer in self.encoder:
-                    x = layer(x)
-                    this_batch.append(x)
-                for layer in self.decoder:
-                    x = layer(x)
-                    this_batch.append(x)
-                z = torch.cat(this_batch, dim=1)
-                result.append(z)
-        result = torch.cat(result, dim=0)
-        return result
-
     def get_anomaly_score(self, df):
         """
         Returns a per-row loss of the input dataframe.
         Does not corrupt inputs.
         """
-        mse, bce, cce = self.get_anomaly_score_losses(df)
+        mse, bce, cce = self._get_anomaly_score_losses(df)
 
         combined_loss = torch.cat([mse, bce, cce], dim=1)
 
@@ -1654,7 +1156,7 @@ class AutoEncoder(torch.nn.Module):
 
         return net_loss
 
-    def decode_outputs_to_df(self, num, bin, cat):
+    def _decode_outputs_to_df(self, num, bin, cat):
         """
         Converts the model outputs of the numerical, binary, and categorical features
         back into a pandas dataframe.
@@ -1701,32 +1203,7 @@ class AutoEncoder(torch.nn.Module):
 
         return output_df
 
-    def df_predict(self, df):
-        """
-        Runs end-to-end model.
-        Interprets output and creates a dataframe.
-        Outputs dataframe with same shape as input
-            containing model predictions.
-        """
-        self.eval()
-        data = self.prepare_df(df)
-        with torch.no_grad():
-            num, bin, embeddings = self.encode_input(data)
-            x = torch.cat(num + bin + embeddings, dim=1)
-            num, bin, cat = self.model(x)
-            output_df = self.decode_outputs_to_df(num=num, bin=bin, cat=cat, df=df)
-
-        return output_df
-
-    def get_anomaly_score_with_losses(self, df):
-
-        mse, bce, cce = self.get_anomaly_score_losses(df)
-
-        net = self.get_anomaly_score(df)
-
-        return mse, bce, cce, net
-
-    def get_anomaly_score_losses(self, df):
+    def _get_anomaly_score_losses(self, df):
         """
         Run the input dataframe `df` through the autoencoder to get the recovery losses by feature type
         (numerical/boolean/categorical).
@@ -1771,7 +1248,7 @@ class AutoEncoder(torch.nn.Module):
         cce_loss = torch.cat(cce_loss_slices, dim=0)
         return mse_loss, bce_loss, cce_loss
 
-    def scale_losses(self, mse, bce, cce):
+    def _scale_losses(self, mse, bce, cce):
 
         # Create outputs
         mse_scaled = torch.zeros_like(mse)
@@ -1796,16 +1273,16 @@ class AutoEncoder(torch.nn.Module):
         data = self.prepare_df(df)
 
         with torch.no_grad():
-            num, bin, embeddings = self.encode_input(data)
+            num, bin, embeddings = self._encode_input(data)
             x = torch.cat(num + bin + embeddings, dim=1)
             num, bin, cat = self.model(x)
-            output_df = self.decode_outputs_to_df(num=num, bin=bin, cat=cat)
+            output_df = self._decode_outputs_to_df(num=num, bin=bin, cat=cat)
 
         # set the index of the prediction df to match the input df
         output_df.index = df.index
 
-        mse, bce, cce = self.get_anomaly_score_losses(df)
-        mse_scaled, bce_scaled, cce_scaled = self.scale_losses(mse, bce, cce)
+        mse, bce, cce = self._get_anomaly_score_losses(df)
+        mse_scaled, bce_scaled, cce_scaled = self._scale_losses(mse, bce, cce)
 
         if (return_abs):
             mse_scaled = abs(mse_scaled)
